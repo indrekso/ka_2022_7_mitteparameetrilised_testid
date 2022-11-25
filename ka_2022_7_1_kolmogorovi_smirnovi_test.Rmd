@@ -1,0 +1,282 @@
+---
+title: "Kolmogorovi-Smirnovi test"
+author: "Indrek Soidla"
+date: '2022-11-24'
+output: 
+  html_document:
+    theme: spacelab
+    highlight: tango
+    fig_cap: true
+    toc: true
+    toc_float: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loeme sisse vajalikud paketid.
+
+```{r message = FALSE, warning = FALSE}
+library(haven)
+library(tidyverse)
+library(TAM)
+library(summarytools)
+```
+
+R-s Kolmogorovi-Smirnovi testi tegemise näitena jätkame õppevideos kasutatud näidet Kesk- ja Kirde-Eesti palkade erinevuse testimise kohta Euroopa Sotsiaaluuringu 2018. aasta andmete põhjal.
+
+```{r}
+ee9 <- read_spss("data/ee9.sav")
+
+ee9_kk <- ee9 %>% 
+  filter(region == "EE006" | region == "EE007") %>% 
+  mutate(region2 = recode(region,
+                          "EE006" = "Kesk-Eesti",
+                          "EE007" = "Kirde-Eesti"))
+```
+
+## Kas oleks võimalik kasutada ka *t*-testi (parameetrilist testi)?
+
+Kui soovime arvulise tunnuse jaotuse erinevust kahes grupis testida, siis põhimõtteliselt võiksime seda teha aritmeetiliste keskmiste põhjal ehk võrrelda keskmist palka kahes grupis. Seda võimaldaks *t*-test, kuid *t*-testi rakendamiseks peaks mõlemas grupis palkade jaotus olema lähedane normaaljaotusele. Kontrollime, kas see nii on, kõigepealt visuaalselt histogrammi abil. (`ggplot` teavitab teid siin ja edaspidi andmetüübi mõningasest ebasobivusest, sellest pole lugu, `ggplot` saab sellega hakkama; samuti hoiatatakse, et 261 individil esineb andmelünki, mis on ok, sest valdav enamus neist on vastajad, kes ei töötanud.)
+
+```{r}
+ggplot(ee9_kk, aes(grspnum)) + 
+  geom_histogram() + 
+  facet_wrap(~ region2) +
+  xlab("Brutopalk") +
+  ylab("Sagedus")
+```
+
+Nagu ikka palkade puhul, on ka nendes kahes grupis palkade jaotus positiivselt asümmeetriline, vähemalt Kirde-Eestis ka teravatipulisem kui normaaljaotuse puhul. Tehniline nüanss: kui sooviksime jaotused kuvada ühel joonisel erineva värviga, siis histogramm seda hästi ei võimalda, küll aga tihedusjaotus, mis esitab jaotuse sujuvamal kujul (ning ei ole väiksema arvu erinevate väärtuste puhul niivõrd täpne). Y-teljel olevad väärtused arvutatakse nii, et kõvera alune ala moodustab kokku 1.
+
+```{r message = FALSE, warning = FALSE}
+ggplot(ee9_kk, aes(grspnum, fill = region2)) + 
+  geom_density(alpha = 0.5) +
+  xlab("Brutopalk") +
+  ylab("Tihedus") +
+  scale_fill_discrete(name = "Regioon")
+```
+
+Et hinnata erinevust normaaljaotusest, arvutame ka palga kujuparameetrid mõlemas grupis.
+
+```{r}
+ee9_kk %>% 
+  drop_na(grspnum) %>% 
+  group_by(region2) %>% 
+  summarise(skew = weighted_skewness(grspnum, w = pspwght), 
+            kurt = weighted_kurtosis(grspnum, w = pspwght))
+```
+
+Eelnevad kahtlused saavad kinnitust. Huvitaval kombel on kujuparameetrite põhjal isegi Kirde-Eesti puhul palkade jaotus normaaljaotusele lähemal - ilmselt on Kesk-Eesti puhul näitajad kõrgemad seetõttu, et seal esineb ka 3000 eurost suuremaid väärtusi, mis venitavad jaotuse laiemaks, seega ka asümmeetria suuremaks, ning nende tugevamalt eristuvate väärtuste tõttu on ka järskuskordaja kõrgem (järskuskordaja mõõdab eelkõige jaotuse sabade paksust/väljavenitatust ja on seetõttu tundlik erindite suhtes, mitte niivõrd terava tipu suhtes *per se*).
+
+## Kumulatiivsed jaotused
+
+Igatahes näeme eelnevast, et *t*-testi eeldus normaaljaotuse kohta pole täidetud ja *t*-testi kasutamisel peaksime arvestama mingisuguse valikuveast suurema veaga, mille tõttu võime järelduste osas eksida. See on see koht, kus appi tõttavad Kolmogorov ja Smirnov! Uurime enne ka visuaalselt palkade kumulatiivseid jaotusi, et täpsemalt mõista auväärt seltsimeeste loodud testi sisu.
+
+```{r message = FALSE, warning = FALSE}
+ggplot(ee9_kk, aes(grspnum, colour = region2)) + 
+  stat_ecdf(geom = "step") +
+  xlab("Brutopalk") +
+  ylab("Kumulatiivne suhteline sagedus") +
+  scale_colour_discrete(name = "Regioon")
+```
+
+Eelneval joonisel on esitatud kumulatiivsed jaotused ilma andmeid kaalumata, kuna tegu on küsitlusandmetega, oleks hea neid ka kaaluda. Kuigi funktsioon `ggplot` lubab üldiselt andmeid kaaluda (funktsiooni `aes` argumendiga `weight`), siis kumulatiivset jaotust esitav funktsioon `stat_ecdf` seda ei arvesta ja esitab kaalumata kumulatiivsed jaotused ka siis, kui argumenti `weight` kasutatakse. Antud juhul kaalumine palju küll jaotusi ei muudaks, kuid täpsuse huvides võiks seda igaks juhuks üritada. Järgneva käsuga `source` laetakse veebist alla ja käivitatakse kulisside taga üks R-i skriptifail, mis kirjutab funktsiooni `stat_ecdf` üle nii, et see arvestab ka kaale. Kuna see skriptifail eeldab paketi `spatstat` olemasolu, on ka selle installeerimise käsk siin toodud.
+
+```{r eval = FALSE}
+install.packages("spatstat")
+```
+
+```{r message = FALSE, warning = FALSE}
+source("https://raw.githubusercontent.com/NicolasWoloszko/stat_ecdf_weighted/master/stat_ecdf_weighted.R")
+
+ggplot(ee9_kk, aes(grspnum, colour = region2, weight = pspwght)) + 
+  stat_ecdf(geom = "step") +
+  xlab("Brutopalk") +
+  ylab("Kumulatiivne suhteline sagedus") +
+  scale_colour_discrete(name = "Regioon")
+```
+
+Näeme, et Kirde-Eesti palkade kumulatiivse jaotuse kõver tõuseb kiiremas tempos, mis tähendab, et sealsete palgasaajate seas on madalamapalgalisi rohkem (sealjuures oleks siiski kohane täpsustada, et alla 500-eurose palgaga indiviidide osakaalus erinevusi ei ole ja töötasuks nulli märkinute osakaal on suurem hoopis Kesk-Eestis). Kas erinevus jaotustes, mida näeme, võib tuleneda pelgalt sellest, et Kesk-Eestis on valimisse sattunud juhuslikult rohkem kõrgemapalgalisi indiviide ja Kirde-Eestis vastupidi, seda saamegi teada Kolmogorovi-Smirnovi testi põhjal. 
+
+## Kolmogorovi-Smirnovi test
+
+Küsitlusandmete puhul tuleks andmeid tulemuste esinduslikkuse huvides enamasti kaaluda, aga teeme siin testi läbi nii andmeid kaalumata kui kaaludes (et oleks tööriistad olemas ka juhuks, kui andmeid kaaluda pole vaja). Kolmogorovi-Smirnovi testi tegemiseks ilma andmeid kaalumata saab R-s kasutada funktsiooni `ks.test`, selleks on tarvis kahte andmevektorit, kus ühes on Kesk-Eesti elanike töötasud ja teises Kirde-Eesti omad. Kolmogorovi-Smirnovi testi tegemiseks kaalutud andmetega on paketis `Ecume` funktsioon `ks_test` (punkti asemel alakriips). Selle jaoks on tarvis lisaks kummagi regiooni töötajate töötasude väärtustele ka kummagi regiooni samade inidiviidide kaalude väärtusi. Selleks jagame andmestiku kaheks, kummaski osas on kummagi regiooni vastajate andmed.
+
+```{r}
+ee9_kesk <- ee9_kk %>% 
+  filter(region2 == "Kesk-Eesti")
+
+ee9_kirde <- ee9_kk %>% 
+  filter(region2 == "Kirde-Eesti")
+
+ks.test(ee9_kesk$grspnum, ee9_kirde$grspnum)
+```
+
+Teeme testi ka kaalutud andmetega ja siis üritame tulemusi tõlgendada. Funktsioon `ks_test` töötab sarnaselt varasemalt kasutatud funktsiooniga `wtd.t.test`, lisaks on siin argument `thresh`, millega saab seadistada, kui suure erinevuse esinemist kumulatiivsetes jaotustes populatsioonis testime. Enamasti võetakse selleks null, sest ollakse huvitatud, kas populatsioonis erinevus *üldse* esineb. Kui oleme huvitatud sellest, kas erinevus on vähemalt mingis ulatuses, võib sinna argumendile `thresh` omistada ka suurema arvu.
+
+Funktsioonile `ks_test` ei meeldi, et palkade väärtuste tunnustel on mingisugused märgendid, st et tegu pole puhta arvulise vektoriga, seetõttu kasutame ka funktsiooni `as.numeric`. Argumentidega w_x ja w_y seadistame kaalude tunnused (nende väärtustele mingeid märgendeid lisatud ei ole).
+
+```{r eval = FALSE}
+install.packages("Ecume")
+```
+
+```{r warning = FALSE}
+library(Ecume)
+
+ks_test(as.numeric(ee9_kesk$grspnum), as.numeric(ee9_kirde$grspnum), 
+        thresh = 0, 
+        w_x = ee9_kesk$pspwght, w_y = ee9_kirde$pspwght)
+```
+
+Tulemused siinkohal kaalumata ja kaalutud andmete puhul eriti ei erine, kaalumata andmete puhul on kumulatiivsete jaotuste suureim erinevus 27,2%, kaalutud andmete puhul 26,7%. Mõlemal juhul saame olulisuse nivool 0,05 kinnitada palkade kumulatiivsete jaotuste erinevust populatsioonis. Tähele võib küll panna, et olulisuse tõenäosus pole 0,05-st väga palju madalam ning olulisuse nivool 0,01 tuleks meil jääda nullhüpoteesi juurde. See vihjab ka, et isegi kui võtame otsuse tegemisel aluseks olulisuse nivoo 0,05 ja saame seega väita kumulatiivsete jaotuste erinevust populatsioonis, ei pruugi nende maksimaalne erinevus populatsioonis olla nullist kuigi palju erinev (kuigi erinevus võib muidugi olla ka suurem kui 27% - kui suur see täpselt on, sellesse jääbki päris palju määramatust kogumite väiksuse tõttu).
+
+## Ülesanne 1
+
+Vahel ei jõua me erinevate testide alusel samadele järeldustele. Sel juhul on oluline mõtestada, mille poolest testid erinevad ja mida me erinevate tulemuste alusel järeldada saame. Uurime, kuidas erinevad *t*-test ja Kolmogorovi-Smirnovi test ning kuidas nende alusel saadavad tulemused võivad üksteisest erineda. 
+
+Laadige R-i andmed palkade kohta kahes grupis, kummaski grupis on 500 indiviidi. Andmed on välja mõeldud, aga eeldame, et tegu on populatsioonist juhusliku valiku alusel saadud andmetega. Kas populatsioonis kahe grupi palgad erinevad? Millise vastuseni jõuate Kolmogorovi-Smirnovi testi põhjal, millise vastuseni *t*-testi põhjal? Miks tulemused erinevad? Kas tulemused on omavahel vastuolus? Uurige selleks palkade jaotusi ja jaotusparameetreid kahes grupis. Oluline on siinkohal tähele panna, mida kummalgi juhul erinevus palkades tähendab ehk mis küsimusele kumbki test võimaldab vastata.
+
+Andmete laadimine
+
+```{r}
+palgad <- read.csv("https://kodu.ut.ee/~indrekso/palgad.csv")
+```
+
+```{r eval = FALSE}
+View(palgad)
+```
+
+Edasi tehke iseseisvalt, vajadusel küsige abi. Esitage ülesande lahendus kas:
+
+- Rmarkdowniga tehtud html-failina või 
+- nagu varasemalt skriptifailis, kuhu lisage ka lahenduseni jõudmiseks vajalikud eelnevad käsud (nt pakettide laadimine, andmete sisselugemine).
+
+Proovige ülesanne teha kõigepealt iseseisvalt eelneva koodi põhjal. Kui see ei õnnestu, siis…
+
+<details>
+  <summary>Väljundi nägemiseks klikkige siia</summary>
+
+```{r echo = FALSE}
+palk1 <- palgad %>% 
+  filter(grupp == 1) %>% 
+  pull(palk)
+
+palk2 <- palgad %>% 
+  filter(grupp == 2) %>% 
+  pull(palk)
+
+ks.test(palk1, palk2)
+```
+
+```{r echo = FALSE, eval = FALSE}
+t.test(palk1, palk2)
+```
+
+```{r echo = FALSE}
+t.test(palk ~ grupp, data = palgad)
+```
+
+```{r echo = FALSE}
+palgad %>% 
+  group_by(grupp) %>% 
+  descr(palk)
+```
+
+Kui soovite alljärgnevaid diagramme saada täpselt sellisele kujule nagu nad siin on, siis on mingite üksikute seadete jaoks ilmselt vajalik / mõttekas ka koodi piiluda.
+
+```{r echo = FALSE}
+palgad_kesk <- palgad %>% 
+  group_by(grupp) %>% 
+  summarise(keskm = mean(palk))
+
+palgad_kesk
+
+ggplot(palgad, aes(palk, fill = as.factor(grupp))) +
+  geom_density(alpha = 0.5) +
+  geom_vline(data = palgad_kesk, aes(xintercept = keskm, colour = as.factor(grupp))) +
+  scale_fill_discrete(name = "Grupp") +
+  scale_colour_discrete(name = "Grupp") +
+  xlab("Palk") +
+  ylab("Tihedus")
+
+ggplot(palgad, aes(palk, colour = as.factor(grupp))) +
+  stat_ecdf(geom = "step") +
+  scale_colour_discrete(name = "Grupp") +
+  xlab("Palk") +
+  ylab("Kumulatiivne suhteline sagedus")
+```
+
+</details>
+
+<br>
+
+<details>
+  <summary>Koodi nägemiseks klikkige siia</summary>
+
+```{r eval = FALSE}
+palk1 <- palgad %>% 
+  filter(grupp == 1) %>% 
+  pull(palk)
+
+palk2 <- palgad %>% 
+  filter(grupp == 2) %>% 
+  pull(palk)
+
+ks.test(palk1, palk2)
+```
+
+```{r eval = FALSE}
+t.test(palk1, palk2)
+```
+
+või
+
+```{r eval = FALSE}
+t.test(palk ~ grupp, data = palgad)
+```
+
+```{r eval = FALSE}
+palgad %>% 
+  group_by(grupp) %>% 
+  descr(palk)
+
+palgad_kesk <- palgad %>% 
+  group_by(grupp) %>% 
+  summarise(keskm = mean(palk))
+
+palgad_kesk
+
+ggplot(palgad, aes(palk, fill = as.factor(grupp))) +
+  geom_density(alpha = 0.5) +
+  geom_vline(data = palgad_kesk, aes(xintercept = keskm, colour = as.factor(grupp))) +
+  scale_fill_discrete(name = "Grupp") +
+  scale_colour_discrete(name = "Grupp") +
+  xlab("Palk") +
+  ylab("Tihedus")
+
+ggplot(palgad, aes(palk, colour = as.factor(grupp))) +
+  stat_ecdf(geom = "step") +
+  scale_colour_discrete(name = "Grupp") +
+  xlab("Palk") +
+  ylab("Kumulatiivne suhteline sagedus")
+```
+
+</details>
+
+
+
+
+```{r echo = FALSE, eval = FALSE}
+library(sjstats)
+kruskal.test(as.numeric(grspnum) ~ region, ee9)
+weighted_mannwhitney(data = ee9, x = grspnum, grp = region, weights = pspwght)
+
+library(survey)
+ee9w <- svydesign(id = ~1, data = ee9, weights = ~pspwght)
+svyranktest(grspnum ~ region, ee9w, test = "KruskalWallis")
+svyranktest(grspnum ~ region, ee9w, test = "wilcoxon")
+```
+
